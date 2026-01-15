@@ -1,0 +1,61 @@
+<?php
+session_start();
+include 'includes/db.php';
+include 'includes/auth_check.php';
+
+if (!isset($_GET['teacher_id']) || !isset($_GET['session_no']) || !isset($_GET['action'])) {
+    header("Location: dashboard.php");
+    exit();
+}
+
+$teacher_id = intval($_GET['teacher_id']);
+$session_no = intval($_GET['session_no']);
+$action = $_GET['action'];
+$user_id = $_SESSION['user_id'];
+
+// Verify session exists and user is a t or l in the session
+$sql = "SELECT * FROM session WHERE teacher_id = $teacher_id AND session_no = $session_no AND (teacher_id = $user_id OR learner_id = $user_id)"; 
+$check = $conn->query($sql);
+
+if ($check->num_rows == 0) {
+    die("Unauthorized access found in session_action.php. Session not found or you are not a participant.");
+}
+
+$session = $check->fetch_assoc();
+
+if ($action == 'accept' && $session['teacher_id'] == $user_id) {
+    $conn->query("UPDATE session SET status = 'accepted' WHERE teacher_id = $teacher_id AND session_no = $session_no");
+} elseif ($action == 'cancel') {
+    $conn->query("UPDATE session SET status = 'cancelled' WHERE teacher_id = $teacher_id AND session_no = $session_no"); 
+    if($session['status'] == 'pending') {
+         $conn->query("DELETE FROM session WHERE teacher_id = $teacher_id AND session_no = $session_no"); // Remove pending sessions on cancel
+    }
+} elseif ($action == 'complete' && $session['teacher_id'] == $user_id) {
+    // 1. Update status
+    $conn->query("UPDATE session SET status = 'completed' WHERE teacher_id = $teacher_id AND session_no = $session_no");
+    
+    // 2. Transact Points
+    $points = $session['duration_hours'] * 10; 
+    
+    $conn->query("UPDATE user SET skillpoints = skillpoints + $points WHERE user_id = " . $session['teacher_id']);
+    $conn->query("UPDATE user SET skillpoints = skillpoints - $points WHERE user_id = " . $session['learner_id']);
+    
+    // 3. Update Stats
+    $conn->query("UPDATE teacher SET total_hours_taught = total_hours_taught + " . $session['duration_hours'] . " WHERE teacher_id = " . $session['teacher_id']);
+    $conn->query("UPDATE learner SET total_hours_learned = total_hours_learned + " . $session['duration_hours'] . " WHERE learner_id = " . $session['learner_id']);
+
+    // 4. Auto-Award Badges (Logic)
+    // Check Teacher Hours
+    $res = $conn->query("SELECT total_hours_taught FROM teacher WHERE teacher_id = " . $session['teacher_id']);
+    $hours = $res->fetch_assoc()['total_hours_taught'];
+    
+    if($hours >= 50) {
+        // Award 'Master Mentor' (Badge ID 1)
+        $conn->query("INSERT IGNORE INTO user_badge (user_id, badge_id, awarded_date, awarded_by) VALUES (" . $session['teacher_id'] . ", 1, NOW(), 1)");
+    }
+    
+}
+
+
+header("Location: dashboard.php");
+?>
